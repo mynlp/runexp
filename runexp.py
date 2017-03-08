@@ -22,13 +22,15 @@
     `python runexp.py`
 
 - Example
-  - The following example executes `sort` first, and then `head`.
+  - The following example executes `ls -l`, `sort`, and then `head`.
   - The order of `exp()` does not matter.  The system automatically
     computes dependencies among tasks, and executes them in the
     appropriate order.
 
 ```
-exp = Workflow()
+import runexp
+exp = runexp.Workflow()
+exp(target='input.txt', rule='ls -l > input.txt')
 exp(source='input.txt', target='sorted.txt', rule='sort input.txt > sorted.txt')
 exp(source='sorted.txt', target='head.txt', rule='head -n 1 sorted.txt > head.txt')
 exp.run()
