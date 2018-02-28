@@ -267,6 +267,8 @@ class TaskGraph:
             for target in task.target:
                 target_path = os.path.realpath(target)
                 self.next_tasks[task_id].extend(next_tasks.get(target_path, []))
+        self.prev_tasks = [list(set(l)) for l in self.prev_tasks]
+        self.next_tasks = [list(set(l)) for l in self.next_tasks]
         logger.debug('prev_tasks: %s', self.prev_tasks)
         logger.debug('next_tasks: %s', self.next_tasks)
         pass
