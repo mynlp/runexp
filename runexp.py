@@ -412,7 +412,7 @@ class TaskGraph:
             for prev_task in prev_tasks:
                 out.write('  t{} -> t{};\n'.format(prev_task, task_id))
         out.write('}\n')
-        return out.getvalue()
+        return out.getvalue().encode()
             
 ######################################################################
 
