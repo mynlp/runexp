@@ -396,7 +396,7 @@ class TaskGraph:
     
     def draw_dependencies(self):
         """Output a task graph in dot format"""
-        out = StringIO.StringIO()
+        out = StringIO()
         out.write('digraph dependencies {\n')
         out.write('  rankdir = LR;')
         out.write('  node [shape = box];\n')
