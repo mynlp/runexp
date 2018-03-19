@@ -2,6 +2,12 @@
 
 A simple tool to run experiments in a complex workflow
 
+## Requirements
+
+```
+pip install psutil
+```
+
 ## Steps to run experiments
 
 1. Copy `runexp.py` into your directory.
