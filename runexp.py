@@ -114,18 +114,16 @@ try:
 except ImportError:
     from io import StringIO
 
-# For python2 and 3 compatibility (basestring is not available in python3)
-try:
-    basestring  # attempt to evaluate basestring
+if sys.version_info.major == 2:
     def isstr(s):
         return isinstance(s, basestring)
     def iterdict(d):
         return d.iteritems()
-except NameError:
+else:
     def isstr(s):
         return isinstance(s, str)
     def iterdict(d):
-        return d
+        return d.items()
 
 logger = logging.getLogger(__name__)
 #logging.basicConfig(level=logging.DEBUG, format='%(asctime)s:%(name)s:%(funcName)s:%(levelname)s: %(message)s')
