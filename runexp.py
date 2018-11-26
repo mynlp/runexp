@@ -885,6 +885,8 @@ class Workflow:
             arguments = self.parse_args(args)
             if arguments.config is not None:
                 config = arguments.config
+        else:
+            arguments = None
 
         # initialize with configuration file
         if config is not None:
