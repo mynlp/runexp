@@ -70,12 +70,14 @@ exp.run()
     - depend (optional): other dependent files (space-separated string
       or list of strings)
     - name (optional): a short name shown in the log message
-  - The following options maybe specified to control the behavior:
+  - The following options may be specified to control the behavior:
     - always: always execute this task (bool; default=False)
     - no_timestamp: do not check timestamp (bool; default=False)
     - ignore_same_task: ignore doubly added equivalent tasks (bool;
       default=False); when equivalent tasks are found but this option
       is False, the system shows an error.
+    - ignore_error: ignore an error of the executed command (bool;
+      default=False)
 
 - Defining resource conditions
   - Specify available resources for workers, and required resources for tasks
@@ -150,7 +152,7 @@ def coloring(color, text):
 
 class Task:
     """A single task to receive source files and produce target files"""
-    def __init__(self, name=None, desc=None, source=[], target=[], rule=[], depend=[], resource={}, always=False, no_timestamp=False, ignore_same_task=False):
+    def __init__(self, name=None, desc=None, source=[], target=[], rule=[], depend=[], resource={}, always=False, no_timestamp=False, ignore_same_task=False, ignore_error=False):
         if isstr(source):
             source = source.split()
         if isstr(target):
@@ -183,6 +185,7 @@ class Task:
         self.always = always  # force all commands to be executed
         self.no_timestamp = no_timestamp  # run commands only when targets do not exist (do not check timestamp)
         self.ignore_same_task = ignore_same_task
+        self.ignore_error = ignore_error
         pass
 
     def __repr__(self):
@@ -483,12 +486,13 @@ class Worker(multiprocessing.Process):
         return
 
 class ExecCommand:
-    def __init__(self, task_no, task, is_dry_run=False, touch=False, up_to_date=False):
+    def __init__(self, task_no, task, is_dry_run=False, touch=False, up_to_date=False, ignore_error=False):
         self.task_no = task_no
         self.task = task
         self.is_dry_run = is_dry_run  # do not run commands
         self.touch = touch            # run `touch` rather than executing commands
         self.up_to_date = up_to_date  # whether the targets are up-to-date
+        self.ignore_error = ignore_error  # ignore errors of commands
         pass
 
     def exec_touch(self, targets):
@@ -541,7 +545,7 @@ class ExecCommand:
             logger.info(coloring('green', '%s [%s] start: ') + '%s', self.task_no, self.task.name, self.task.show_rule())
             for rule in self.task.rule:
                 ret = self.exec_command(rule)
-                if ret != 0:
+                if ret != 0 and not self.ignore_error:
                     return ret
             logger.info(coloring('yellow', '%s [%s] done: ') + '%s', self.task_no, self.task.name, self.task.show_rule())
             return 0
@@ -591,7 +595,7 @@ class Scheduler:
         self.num_executed_tasks += 1
         task_no = '({}/{})'.format(self.num_executed_tasks, self.task_graph.num_executed_tasks())
         logger.debug('Scheduler.__add_task(): put task %s to the queue', task_id)
-        command = ExecCommand(task_no, self.task_graph.task_list[task_id], is_dry_run=self.dry_run, touch=self.touch, up_to_date=not self.task_graph.is_outdated(task_id))
+        command = ExecCommand(task_no, self.task_graph.get_task(task_id), is_dry_run=self.dry_run, touch=self.touch, up_to_date=not self.task_graph.is_outdated(task_id), ignore_error=self.ignore_errors or self.task_graph.get_task(task_id).ignore_error)
         task_queue.append((task_id, command))
         logger.debug('Scheduler.__add_task() done.  task queue size: %s', len(task_queue))
         pass
@@ -620,7 +624,7 @@ class Scheduler:
         logger.debug('Scheduler received task %s failure', task_id)
         self.num_failed_tasks += 1
         self.num_executed_tasks -= 1
-        task = self.task_graph.task_list[task_id]
+        task = self.task_graph.get_task(task_id)
         logger.error(coloring('red', '***** [%s] failed (status=%s) *****: ') + '%s', task.name, ret, task.show_rule())
         logger.debug('Scheduler removes targets of task %s', task_id)
         self.__remove_targets(task_id)
@@ -631,7 +635,7 @@ class Scheduler:
         Should be called when the task is failed"""
         # TODO: should remove only updated targets
         # at the moment, all targets are removed
-        targets = self.task_graph.task_list[task_id].target
+        targets = self.task_graph.get_task(task_id).target
         if len(targets) > 0:
             logger.info(coloring('red', 'Removing targets: ') + '%s', ' '.join(targets))
             rename_suffix = '.failed-{}'.format(datetime.now().strftime("%Y%m%d%H%M%S"))
@@ -648,7 +652,7 @@ class Scheduler:
             task = task_queue.popleft()
             worker_id = None
             for i, id in enumerate(worker_queue):
-                if self.task_graph.task_list[task[0]].resource_satisfied(self.resources[id]):
+                if self.task_graph.get_task(task[0]).resource_satisfied(self.resources[id]):
                     worker_index = i
                     worker_id = id
                     break
@@ -698,7 +702,7 @@ class Scheduler:
                 # retrieve task results and complete tasks
                 worker_id, task_id, ret = result_queue.get()
                 logger.debug('Scheduler recieved task %s result code %s from worker %s', task_id, ret, worker_id)
-                if ret != 0 and not self.ignore_errors:
+                if ret != 0 and not (self.ignore_errors or self.task_graph.get_task(task_id).ignore_error):
                     # task failed
                     self.__process_failed_task(task_id, ret)
                     if not self.keep_going:
