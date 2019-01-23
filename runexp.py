@@ -560,7 +560,7 @@ class TaskFailedException(Exception):
         return 'Task {} failed with status={}'.format(self.task_id, self.ret)
 
 class Scheduler:
-    def __init__(self, task_graph, dry_run=False, touch=False, keep_going=False, ignore_errors=False, num_jobs=1, environments=None, resources=None):
+    def __init__(self, task_graph, dry_run=False, touch=False, keep_going=False, ignore_errors=False, ignore_missing_sources=False, num_jobs=1, environments=None, resources=None):
         if not isinstance(task_graph, TaskGraph):
             raise ValueError("task_graph must be an instance of TaskGraph")
         if environments is None:
@@ -580,6 +580,7 @@ class Scheduler:
         self.touch = touch
         self.keep_going = keep_going
         self.ignore_errors = ignore_errors
+        self.ignore_missing_sources = ignore_missing_sources
         self.num_jobs = num_jobs
         self.environments = environments
         self.resources = resources
@@ -674,8 +675,9 @@ class Scheduler:
         if len(missing_sources) > 0:
             for s in sorted(missing_sources):
                 logger.error(coloring('red', 'Source not found: ') + '%s', s)
-            self.num_failed_tasks = len(missing_sources)
-            return  # Cannot run the tasks because some sources not found
+            if not self.ignore_missing_sources:
+                self.num_failed_tasks = len(missing_sources)
+                return  # Cannot run the tasks because some sources not found
         initial_tasks = self.task_graph.initial_tasks
         logger.debug('initial tasks: %s', initial_tasks)
         done_tasks = set()
@@ -755,6 +757,7 @@ class Workflow:
                     dependency_graph = None,
                     keep_going = None,
                     ignore_errors = None,
+                    ignore_missing_sources = None,
                     always = None,
                     no_timestamp = None,
                     debug_level = None,
@@ -783,6 +786,9 @@ class Workflow:
         if ignore_errors is not None:
             if not isinstance(ignore_errors, bool): raise ValueError("ignore_errors must be bool")
             self.ignore_errors = ignore_errors
+        if ignore_missing_sources is not None:
+            if not isinstance(ignore_missing_sources, bool): raise ValueError("ignore_missing_sources must be bool")
+            self.ignore_missing_sources = ignore_missing_sources
         if always is not None:
             if not isinstance(always, bool): raise ValueError("always must be bool")
             self.always = always
@@ -818,6 +824,7 @@ class Workflow:
                      dependency_graph = None,
                      keep_going = False,
                      ignore_errors = False,
+                     ignore_missing_sources = False,
                      always = False,
                      no_timestamp = False,
                      debug_level = logging.INFO,
@@ -836,6 +843,7 @@ class Workflow:
                          dependency_graph = dependency_graph,
                          keep_going = keep_going,
                          ignore_errors = ignore_errors,
+                         ignore_missing_sources = ignore_missing_sources,
                          always = always,
                          no_timestamp = no_timestamp,
                          debug_level = debug_level,
@@ -847,8 +855,8 @@ class Workflow:
         
     def show_options(self):
         bools = ','.join([x[1] for x in
-                          zip([self.dry_run, self.touch, self.list_tasks, self.keep_going, self.ignore_errors, self.always, self.no_timestamp],
-                              ["dry_run", "touch", "list_tasks", "keep_going", "ignore_errors", "always", "no_timestamp"])
+                          zip([self.dry_run, self.touch, self.list_tasks, self.keep_going, self.ignore_errors, self.ignore_missing_sources, self.always, self.no_timestamp],
+                              ["dry_run", "touch", "list_tasks", "keep_going", "ignore_errors", "ignore_missing_sources", "always", "no_timestamp"])
                           if x[0]])
         return """num_jobs={}, dependency_graph={}, debug_level={}, options: {}""".format(self.num_jobs, self.dependency_graph, self.debug_level, bools)
     
@@ -867,6 +875,7 @@ class Workflow:
         argparser.add_argument('-s', '--silent', '--quiet', dest='silent', action='store_true', default=None, help='Do not print commands to be run')
         argparser.add_argument('-t', '--touch', dest='touch', action='store_true', default=None, help='Touch target files rather than executing commands')
         argparser.add_argument('-i', '--ignore-errors', dest='ignore_errors', action='store_true', default=None, help='Ignore all errors in executed commands')
+        argparser.add_argument('--ignore-missing-sources', dest='ignore_missing_sources', action='store_true', default=None, help='Ignore errors of missing source files')
         argparser.add_argument('-e', '--environment', '--environment-overrides', dest='environment', action='store', default=None, help='Set environment variables (specify variable settings in JSON dictionary format)')
         argparser.add_argument('-E', '--environments-distributed', dest='environments_distributed', action='store', default=None, help='Set environment variables for each distributed worker (specify variable settings in the list of JSON dictionaries; the length of the list must be equal to the number of jobs')
         argparser.add_argument('-r', '--resources', dest='resources', action='store', default=None, help='Set resource specifications (specify resources in JSON dictionary format)')
@@ -913,6 +922,7 @@ class Workflow:
                              dependency_graph = arguments.dependency_graph,
                              keep_going = arguments.keep_going,
                              ignore_errors = arguments.ignore_errors,
+                             ignore_missing_sources = arguments.ignore_missing_sources,
                              always = arguments.always,
                              no_timestamp = arguments.no_timestamp,
                              goal_targets = arguments.target)
@@ -1018,7 +1028,7 @@ class Workflow:
         # Run tasks
         logger.debug('create Scheduler')
         task_graph = TaskGraph(self.task_list, self.goal_targets, self.always, self.no_timestamp)
-        scheduler = Scheduler(task_graph, dry_run=self.dry_run, touch=self.touch, keep_going=self.keep_going, ignore_errors=self.ignore_errors, num_jobs=self.num_jobs, environments=environments, resources=resources)
+        scheduler = Scheduler(task_graph, dry_run=self.dry_run, touch=self.touch, keep_going=self.keep_going, ignore_errors=self.ignore_errors, ignore_missing_sources=self.ignore_missing_sources, num_jobs=self.num_jobs, environments=environments, resources=resources)
         if len(self.goal_targets) > 0:
             logger.info(coloring('blue', 'Targets: %s'), ' '.join(self.goal_targets))
         logger.info(coloring('blue', 'Total %s tasks'), task_graph.num_executed_tasks())
