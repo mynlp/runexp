@@ -470,7 +470,7 @@ class Worker(multiprocessing.Process):
                     raise e
                 except Exception as e:
                     # unexpected error raised
-                    logger.error(coloring('red', 'Error in running task %s: %s'), task_id, e.message)
+                    logger.error(coloring('red', 'Error in running task %s: %s'), task_id, sys.exc_info()[1])
                     self.output_queue.put((self.worker_id, task_id, 1))
                     continue
                 logger.debug('Worker %s finished task %s', self.name, task_id)
@@ -747,7 +747,13 @@ class Scheduler:
         while not result_queue.empty():
             # process finished tasks
             worker_id, task_id, ret = result_queue.get()
-            if ret != 0:
+            if ret == 0 or self.ignore_errors or self.task_graph.get_task(task_id).ignore_error:
+                # task succeeded
+                logger.debug('Scheduler: task %s finished successfully.  complete this task', task_id)
+                self.__complete_task(task_id, done_tasks, task_queue, add_next_tasks=False)
+            else:
+                # task failed
+                logger.debug('Scheduler: task %s failed.', task_id)
                 self.__process_failed_task(task_id, ret)
         logger.debug('Scheduler.run() done')
         pass
@@ -1101,6 +1107,6 @@ if __name__ == '__main__':
         if not exp.run():
             sys.exit(1)
     except ValueError as e:
-        logger.error(coloring('red', e.message))
+        logger.error(coloring('red', sys.exc_info()[1]))
         sys.exit(1)
 
