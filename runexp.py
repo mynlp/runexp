@@ -546,21 +546,13 @@ class ExecCommand:
             for rule in self.task.rule:
                 ret = self.exec_command(rule)
                 if ret != 0 and not self.ignore_error:
+                    logger.error(coloring('red', '***** %s [%s] failed (status=%s) *****: ') + '%s', self.task_no, self.task.name, ret, self.task.show_rule())
                     return ret
             logger.info(coloring('yellow', '%s [%s] done: ') + '%s', self.task_no, self.task.name, self.task.show_rule())
             return 0
 
-class TaskFailedException(Exception):
-    def __init__(self, task_id, ret):
-        self.task_id = task_id
-        self.ret = ret
-        pass
-    
-    def __str__(self):
-        return 'Task {} failed with status={}'.format(self.task_id, self.ret)
-
 class Scheduler:
-    def __init__(self, task_graph, dry_run=False, touch=False, keep_going=False, ignore_errors=False, ignore_missing_sources=False, num_jobs=1, environments=None, resources=None):
+    def __init__(self, task_graph, dry_run=False, touch=False, keep_going=False, terminate_on_error=True, ignore_errors=False, ignore_missing_sources=False, num_jobs=1, environments=None, resources=None):
         if not isinstance(task_graph, TaskGraph):
             raise ValueError("task_graph must be an instance of TaskGraph")
         if environments is None:
@@ -579,13 +571,15 @@ class Scheduler:
         self.dry_run = dry_run
         self.touch = touch
         self.keep_going = keep_going
+        self.terminate_on_error = terminate_on_error
         self.ignore_errors = ignore_errors
         self.ignore_missing_sources = ignore_missing_sources
         self.num_jobs = num_jobs
         self.environments = environments
         self.resources = resources
-        self.num_executed_tasks = 0
-        self.num_failed_tasks = 0
+        self.num_queued_tasks = 0     # Number of tasks added to the task queue
+        self.num_succeeded_tasks = 0  # Number of tasks finished successfully so far
+        self.num_failed_tasks = 0     # NUmber of tasks failed so far
         pass
 
     def __add_task(self, task_id, done_tasks, task_queue):
@@ -593,20 +587,23 @@ class Scheduler:
         If the specified task is not outdated, the task is not executed and complete_task is called directly."""
         logger.debug('Scheduler.__add_task()')
         assert(self.task_graph.is_executed(task_id))  # task_id must be executed_task
-        self.num_executed_tasks += 1
-        task_no = '({}/{})'.format(self.num_executed_tasks, self.task_graph.num_executed_tasks())
+        self.num_queued_tasks += 1
+        task_no = '({}/{})'.format(self.num_queued_tasks, self.task_graph.num_executed_tasks())
         logger.debug('Scheduler.__add_task(): put task %s to the queue', task_id)
         command = ExecCommand(task_no, self.task_graph.get_task(task_id), is_dry_run=self.dry_run, touch=self.touch, up_to_date=not self.task_graph.is_outdated(task_id), ignore_error=self.ignore_errors or self.task_graph.get_task(task_id).ignore_error)
         task_queue.append((task_id, command))
         logger.debug('Scheduler.__add_task() done.  task queue size: %s', len(task_queue))
         pass
 
-    def __complete_task(self, task_id, done_tasks, task_queue):
+    def __complete_task(self, task_id, done_tasks, task_queue, add_next_tasks):
         """Complete the task and add the next tasks to the task queue"""
         logger.debug('Scheduler.__complete_task()')
         assert(self.task_graph.is_executed(task_id))  # task_id must be executed_task
         done_tasks.add(task_id)
+        self.num_succeeded_tasks += 1
         logger.debug('%s tasks have been finished so far', len(done_tasks))
+        if not add_next_tasks:
+            return  # do not add next tasks any more (maybe some task failed already)
         next_tasks = [tid for tid in self.task_graph.next_tasks[task_id] if self.task_graph.is_executed(tid)]
         logger.debug('After task %s, try adding the next %s tasks', task_id, len(next_tasks))
         tasks_to_add = []
@@ -624,9 +621,7 @@ class Scheduler:
         """Post-process failed task; show error message and remove target files"""
         logger.debug('Scheduler received task %s failure', task_id)
         self.num_failed_tasks += 1
-        self.num_executed_tasks -= 1
         task = self.task_graph.get_task(task_id)
-        logger.error(coloring('red', '***** [%s] failed (status=%s) *****: ') + '%s', task.name, ret, task.show_rule())
         logger.debug('Scheduler removes targets of task %s', task_id)
         self.__remove_targets(task_id)
         pass
@@ -696,6 +691,7 @@ class Scheduler:
             worker.start()
         try:
             signal.signal(signal.SIGTERM, sigterm_handler)
+            add_next_tasks = True
             # loop while the task is remaining or some workers are working
             while len(task_queue) > 0 or len(worker_queue) < len(worker_pool):
                 # assign tasks in the queue to workers as far as possible
@@ -704,31 +700,43 @@ class Scheduler:
                 # retrieve task results and complete tasks
                 worker_id, task_id, ret = result_queue.get()
                 logger.debug('Scheduler recieved task %s result code %s from worker %s', task_id, ret, worker_id)
-                if ret != 0 and not (self.ignore_errors or self.task_graph.get_task(task_id).ignore_error):
-                    # task failed
-                    self.__process_failed_task(task_id, ret)
-                    if not self.keep_going:
-                        logger.debug('Scheduler raise exception to stop scheduling')
-                        raise TaskFailedException(task_id, ret)
-                else:
+                if ret == 0 or self.ignore_errors or self.task_graph.get_task(task_id).ignore_error:
                     # task succeeded
                     logger.debug('Scheduler: task %s finished successfully.  complete this task', task_id)
-                    self.__complete_task(task_id, done_tasks, task_queue)
+                    self.__complete_task(task_id, done_tasks, task_queue, add_next_tasks)
+                else:
+                    # task failed
+                    logger.debug('Scheduler: task %s failed.', task_id)
+                    self.__process_failed_task(task_id, ret)
+                    if self.keep_going:
+                        # continue other tasks as far as possible
+                        logger.debug('Scheduler: continue scheduling.')
+                        pass
+                    elif self.terminate_on_error:
+                        # send SIGTERM to terminate other processes
+                        logger.debug('Scheduler: raise exception to terminate tasks')
+                        raise TaskTerminatedException
+                    else:
+                        # stop scheduling, but waiting for other processes to finish
+                        logger.debug('Scheduler: stop scheduling but wait until other running tasks finish')
+                        logger.debug('task_queue has %s items.  removing them.', len(task_queue))
+                        task_queue.clear()
+                        if self.num_jobs > 1:
+                            logger.info(coloring('red', 'Waiting for running tasks to finish...'))
+                        add_next_tasks = False  # do not add next tasks any more
+                        pass
                 logger.debug('Scheduler: worker %s is now available and added to the queue', worker_id)
                 worker_queue.append(worker_id)
                 logger.debug('Scheduler: done collecting results')
-        except (TaskFailedException, TaskTerminatedException, KeyboardInterrupt) as e:
+        except (TaskTerminatedException, KeyboardInterrupt) as e:
             # the scheduling is quit due to task failure, SIGTERM, or SIGINT
             logger.info(coloring('red', 'Terminating running tasks...'))
             logger.debug('Scheduler is stopping due to task failure, SIGTERM, or SIGINT')
             logger.debug('task_queue has %s items.  removing them.', len(task_queue))
-            self.num_executed_tasks -= len(task_queue)
             task_queue.clear()
             logger.debug('Scheduler: terminate %s workers', len(worker_pool))
             for worker in worker_pool:
                 worker.terminate()  # worker will terminate the current task with exit code 1
-            if self.num_jobs > 1:
-                logger.info(coloring('red', 'Waiting for running tasks to finish...'))
         logger.debug('Scheduler: all tasks finished.  Sending poison pill to the workers')
         for input_queue in input_queues:
             input_queue.put((0, None))  # poison pill
@@ -756,6 +764,7 @@ class Workflow:
                     list_tasks = None,
                     dependency_graph = None,
                     keep_going = None,
+                    terminate_on_error = None,
                     ignore_errors = None,
                     ignore_missing_sources = None,
                     always = None,
@@ -783,6 +792,9 @@ class Workflow:
         if keep_going is not None:
             if not isinstance(keep_going, bool): raise ValueError("keep_going must be bool")
             self.keep_going = keep_going
+        if terminate_on_error is not None:
+            if not isinstance(terminate_on_error, bool): raise ValueError("terminate_on_error must be bool")
+            self.terminate_on_error = terminate_on_error
         if ignore_errors is not None:
             if not isinstance(ignore_errors, bool): raise ValueError("ignore_errors must be bool")
             self.ignore_errors = ignore_errors
@@ -823,6 +835,7 @@ class Workflow:
                      list_tasks = False,
                      dependency_graph = None,
                      keep_going = False,
+                     terminate_on_error = True,
                      ignore_errors = False,
                      ignore_missing_sources = False,
                      always = False,
@@ -842,6 +855,7 @@ class Workflow:
                          list_tasks = list_tasks,
                          dependency_graph = dependency_graph,
                          keep_going = keep_going,
+                         terminate_on_error = terminate_on_error,
                          ignore_errors = ignore_errors,
                          ignore_missing_sources = ignore_missing_sources,
                          always = always,
@@ -855,8 +869,8 @@ class Workflow:
         
     def show_options(self):
         bools = ','.join([x[1] for x in
-                          zip([self.dry_run, self.touch, self.list_tasks, self.keep_going, self.ignore_errors, self.ignore_missing_sources, self.always, self.no_timestamp],
-                              ["dry_run", "touch", "list_tasks", "keep_going", "ignore_errors", "ignore_missing_sources", "always", "no_timestamp"])
+                          zip([self.dry_run, self.touch, self.list_tasks, self.keep_going, self.terminate_on_error, self.ignore_errors, self.ignore_missing_sources, self.always, self.no_timestamp],
+                              ["dry_run", "touch", "list_tasks", "keep_going", "terminate_on_error", "ignore_errors", "ignore_missing_sources", "always", "no_timestamp"])
                           if x[0]])
         return """num_jobs={}, dependency_graph={}, debug_level={}, options: {}""".format(self.num_jobs, self.dependency_graph, self.debug_level, bools)
     
@@ -867,8 +881,10 @@ class Workflow:
         argparser.add_argument('-n', '--dry-run', '--dryrun', dest='dry_run', action='store_true', default=None, help='Do not run commands (only print commands to be executed)')
         argparser.add_argument('-l', '--list-tasks', dest='list_tasks', action='store_true', default=None, help='Print the list of tasks')
         argparser.add_argument('-g', '--dependency-graph', dest='dependency_graph', type=str, default=None, help='Output dependency graph')
-        argparser.add_argument('-k', '--keep-going', dest='keep_going', action='store_true', default=None, help='Run all tasks even when some tasks failed')
-        argparser.add_argument('-S', '--no-keep-going', '--stop', dest='keep_going', action='store_false', default=None, help='Stop running tasks when some tasks failed (cancels "-k")')
+        argparser.add_argument('-k', '--keep-going', dest='keep_going', action='store_true', default=None, help='Continue to run tasks as far as possible even when some tasks failed')
+        argparser.add_argument('-S', '--no-keep-going', '--stop', dest='keep_going', action='store_false', default=None, help='Stop to run tasks when some tasks failed (cancels "-k")')
+        argparser.add_argument('-T', '--terminate-on-error', dest='terminate_on_error', action='store_true', default=None, help='Terminate running tasks when some tasks failed (default)')
+        argparser.add_argument('-C', '--no-terminate-on-error', dest='terminate_on_error', action='store_false', default=None, help='Do not terminate running tasks when some tasks failed')
         argparser.add_argument('-B', '--always', dest='always', action='store_true', default=None, help='Force running all commands')
         argparser.add_argument('-N', '--no-timestamp', dest='no_timestamp', action='store_true', default=None, help='Do not run commands if all sources/targets exist (do not check timestamp)')
         argparser.add_argument('-d', '--debug', dest='debug', action='store_true', default=None, help='Show debug messages')
@@ -879,7 +895,7 @@ class Workflow:
         argparser.add_argument('-e', '--environment', '--environment-overrides', dest='environment', action='store', default=None, help='Set environment variables (specify variable settings in JSON dictionary format)')
         argparser.add_argument('-E', '--environments-distributed', dest='environments_distributed', action='store', default=None, help='Set environment variables for each distributed worker (specify variable settings in the list of JSON dictionaries; the length of the list must be equal to the number of jobs')
         argparser.add_argument('-r', '--resources', dest='resources', action='store', default=None, help='Set resource specifications (specify resources in JSON dictionary format)')
-        argparser.add_argument('target', nargs='*', default=None, help='Targets to be built (pattern match can be used; run all the tasks if not specified)')
+        argparser.add_argument('target', nargs='*', default=None, help='Target files to be built (pattern match can be used; run all the tasks if not specified)')
         arguments = argparser.parse_args(args)
         logger.debug('options: %s', arguments)
         return arguments
@@ -921,6 +937,7 @@ class Workflow:
                              list_tasks = arguments.list_tasks,
                              dependency_graph = arguments.dependency_graph,
                              keep_going = arguments.keep_going,
+                             terminate_on_error = arguments.terminate_on_error,
                              ignore_errors = arguments.ignore_errors,
                              ignore_missing_sources = arguments.ignore_missing_sources,
                              always = arguments.always,
@@ -1028,7 +1045,7 @@ class Workflow:
         # Run tasks
         logger.debug('create Scheduler')
         task_graph = TaskGraph(self.task_list, self.goal_targets, self.always, self.no_timestamp)
-        scheduler = Scheduler(task_graph, dry_run=self.dry_run, touch=self.touch, keep_going=self.keep_going, ignore_errors=self.ignore_errors, ignore_missing_sources=self.ignore_missing_sources, num_jobs=self.num_jobs, environments=environments, resources=resources)
+        scheduler = Scheduler(task_graph, dry_run=self.dry_run, touch=self.touch, keep_going=self.keep_going, terminate_on_error=self.terminate_on_error, ignore_errors=self.ignore_errors, ignore_missing_sources=self.ignore_missing_sources, num_jobs=self.num_jobs, environments=environments, resources=resources)
         if len(self.goal_targets) > 0:
             logger.info(coloring('blue', 'Targets: %s'), ' '.join(self.goal_targets))
         logger.info(coloring('blue', 'Total %s tasks'), task_graph.num_executed_tasks())
@@ -1054,9 +1071,9 @@ class Workflow:
             scheduler.run()
 
         if scheduler.task_failed():
-            logger.info(coloring('red', '***** failed *****: %s failed, %s completed'), scheduler.num_failed_tasks, scheduler.num_executed_tasks)
+            logger.info(coloring('red', '***** failed *****: %s failed, %s completed'), scheduler.num_failed_tasks, scheduler.num_succeeded_tasks)
         else:
-            logger.info(coloring('blue', 'done: %s tasks completed'), scheduler.num_executed_tasks)
+            logger.info(coloring('blue', 'done: %s tasks completed'), scheduler.num_succeeded_tasks)
         logger.info(coloring('blue', 'Time: %s'), datetime.now() - start)
         if scheduler.task_failed():
             return False
