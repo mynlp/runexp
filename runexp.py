@@ -70,6 +70,7 @@ exp.run()
     - depend (optional): other dependent files (space-separated string
       or list of strings)
     - name (optional): a short name shown in the log message
+    - desc (optional): a detailed description shown in the task list
   - The following options may be specified to control the behavior:
     - always: always execute this task (bool; default=False)
     - no_timestamp: do not check timestamp (bool; default=False)
@@ -163,8 +164,10 @@ class Task:
             depend = depend.split()
         if name is None:
             name = '; '.join(rule)
-        if desc is None:
-            desc = name
+        if not isstr(name):
+            raise ValueError("name must be a string: {}".format(name))
+        if desc is not None and not isstr(desc):
+            raise ValueError("desc must be a string: {}".format(desc))
         if not isinstance(source, list):
             raise ValueError("source must be a string or a list of strings: {}".format(source))
         if not isinstance(target, list):
@@ -215,13 +218,14 @@ class Task:
 
     def show_task(self):
         depend = "  depend: {}\n".format(' '.join(self.depend)) if len(self.depend) != 0 else ""
-        options = [x[1] for x in zip([self.always, self.no_timestamp, self.ignore_same_task], ["always", "no_timestamp", "ignore_same_task"]) if x[0]]
+        options = [x[1] for x in zip([self.always, self.no_timestamp, self.ignore_same_task, self.ignore_error], ["always", "no_timestamp", "ignore_same_task", "ignore_error"]) if x[0]]
         options_str = "  options: {}\n".format(', '.join(options)) if len(options) > 0 else ""
+        description = "  description: {}\n".format(self.desc) if self.desc is not None else ""
         return """Task: {}
   source: {}
   target: {}
   rule: {}
-{}{}""".format(self.name, ' '.join(self.source), ' '.join(self.target), '; '.join(self.rule), depend, options_str)
+{}{}{}""".format(self.name, ' '.join(self.source), ' '.join(self.target), '; '.join(self.rule), depend, options_str, description)
     
 ######################################################################
 
@@ -248,16 +252,25 @@ class TaskGraph:
     def __make_prev_next_tasks(self):
         """Set prev_tasks and next_tasks by following source/target"""
         logger.debug('TaskGraph.__make_prev_next_tasks()')
-        prev_tasks = {}
-        next_tasks = {}
+        prev_tasks = {}  # file path -> tasks that build this file
+        next_tasks = {}  # file path -> tasks that require this file
         # compute prev/next tasks for each file
         for task_id, task in enumerate(self.task_list):
-            for source in task.source:
-                source_path = os.path.realpath(source)  # use realpath to process same files with different paths
-                next_tasks[source_path] = next_tasks.get(source_path, []) + [task_id]
-            for target in task.target:
-                target_path = os.path.realpath(target)  # use realpath to process same files with different paths
-                prev_tasks[target_path] = prev_tasks.get(target_path, []) + [task_id]
+            # use realpath to process same files with different paths
+            sources = [os.path.realpath(source) for source in task.source]
+            targets = [os.path.realpath(target) for target in task.target]
+            # confirm sources and targets are disjoint
+            if len(set(sources) & set(targets)) != 0:
+                raise ValueError('Source and target files include the same file: {}'.format(task))
+            # collect prev/next tasks of each file
+            for source in sources:
+                next_tasks[source] = next_tasks.get(source, []) + [task_id]
+            for target in targets:
+                prev_tasks[target] = prev_tasks.get(target, []) + [task_id]
+        # confirm that all target files are built by a single task
+        for target_path, task_ids in prev_tasks.items():
+            if len(task_ids) > 1:
+                raise ValueError('Found multiple tasks with the same target "{}": {}'.format(target_path, '; '.join(['"{}"'.format(self.task_list[task_id].name) for task_id in task_ids])))
         # compute prev/next tasks for each task
         self.prev_tasks = [[] for _ in range(self.num_tasks())]
         self.next_tasks = [[] for _ in range(self.num_tasks())]
@@ -273,7 +286,48 @@ class TaskGraph:
         logger.debug('prev_tasks: %s', self.prev_tasks)
         logger.debug('next_tasks: %s', self.next_tasks)
         pass
-    
+
+    def __check_loops(self):
+        """Check loops in the task graph"""
+        logger.debug('TaskGraph.__check_loops()')
+        # traverse all tasks from initial tasks
+        task_stack = [task_id for task_id, _ in enumerate(self.task_list) if len(self.prev_tasks[task_id]) == 0]
+        visited = [0] * len(self.task_list)  # 0 -> not visited yet, 1 -> visiting, 2 -> already done
+        while len(task_stack) > 0:
+            task_id = task_stack.pop()
+            if visited[task_id] == 1:
+                # finish traversing all descendents
+                visited[task_id] = 2
+                continue
+            visited[task_id] = 1  # visiting all descendents of this node
+            task_stack.append(task_id)  # will be popped when all descendents are visited
+            for next_task in self.next_tasks[task_id][::-1]:
+                if visited[next_task] == 1:
+                    # loop detected
+                    start_of_the_loop = task_stack.index(next_task)
+                    loop = task_stack[start_of_the_loop:] + [next_task]
+                    raise ValueError('Found loop in task dependencies: {}'.format(' -> '.join(['"{}"'.format(self.task_list[t].name) for t in loop])))
+                if visited[next_task] == 2:
+                    # already visited; not added to the stack
+                    continue
+                task_stack.append(next_task)
+        # tasks not visited must make a loop
+        unvisited_tasks = [task_id for task_id, _ in enumerate(self.task_list) if not visited[task_id]]
+        if len(unvisited_tasks) > 0:
+            logger.debug('TaskGraph.__check_loops(): loop(s) detected in the task graph')
+            # at least one loop exists.  find a sequence of tasks to make the loop
+            task_stack = [unvisited_tasks[0]]
+            loop_tasks = []
+            while len(task_stack) > 0:
+                task_id = task_stack.pop()
+                loop_tasks.append(task_id)
+                if visited[task_id]: break  # end of the loop
+                visited[task_id] = True
+                task_stack.extend(self.next_tasks[task_id])
+            raise ValueError('Found loop in task dependencies: {}'.format(' -> '.join(['"{}"'.format(self.task_list[t].name) for t in loop_tasks])))
+        logger.debug('TaskGraph.__check_loops(): no loops detected')
+        return
+                
     def __traverse_backwards(self):
         """Traverse tasks from goal targets and obtain previous tasks and tasks to be executed"""
         logger.debug('TaskGraph.__traverse_backwards()')
@@ -330,6 +384,7 @@ class TaskGraph:
     
     def __check_outdated_tasks(self):
         """Check outdated tasks"""
+        # CAUTION: loops in the task graph cause an infinite loop
         logger.debug('TaskGraph.__check_outdated_tasks()')
         outdated_tasks = set()
         for task_id, task in enumerate(self.task_list):
@@ -351,6 +406,8 @@ class TaskGraph:
         logger.debug('TaskGraph.make_dependencies()')
         # compute previous/next tasks
         self.__make_prev_next_tasks()
+        # check loops in the task graph
+        self.__check_loops()
         # obtain tasks that must be executed to build targets
         self.__traverse_backwards()
         # set initial tasks
@@ -1049,8 +1106,13 @@ class Workflow:
             return False
         
         # Run tasks
+        logger.debug('create TaskGraph')
+        try:
+            task_graph = TaskGraph(self.task_list, self.goal_targets, self.always, self.no_timestamp)
+        except ValueError as e:
+            logger.error(coloring('red', e.args[0]))
+            return False
         logger.debug('create Scheduler')
-        task_graph = TaskGraph(self.task_list, self.goal_targets, self.always, self.no_timestamp)
         scheduler = Scheduler(task_graph, dry_run=self.dry_run, touch=self.touch, keep_going=self.keep_going, terminate_on_error=self.terminate_on_error, ignore_errors=self.ignore_errors, ignore_missing_sources=self.ignore_missing_sources, num_jobs=self.num_jobs, environments=environments, resources=resources)
         if len(self.goal_targets) > 0:
             logger.info(coloring('blue', 'Targets: %s'), ' '.join(self.goal_targets))
