@@ -168,13 +168,13 @@ class Task:
             raise ValueError("name must be a string: {}".format(name))
         if desc is not None and not isstr(desc):
             raise ValueError("desc must be a string: {}".format(desc))
-        if not isinstance(source, list):
+        if not (isinstance(source, list) and all([isstr(x) for x in source])):
             raise ValueError("source must be a string or a list of strings: {}".format(source))
-        if not isinstance(target, list):
+        if not (isinstance(target, list) and all([isstr(x) for x in target])):
             raise ValueError("target must be a string or a list of strings: {}".format(target))
-        if not isinstance(rule, list):
+        if not (isinstance(rule, list) and all([isstr(x) for x in rule])):
             raise ValueError("rule must be a string or a list of strings: {}".format(rule))
-        if not isinstance(depend, list):
+        if not (isinstance(depend, list) and all([isstr(x) for x in depend])):
             raise ValueError("depend must be a string or a list of strings: {}".format(depend))
         if not isinstance(resource, dict):
             raise ValueError("resource must be dict")
