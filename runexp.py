@@ -370,16 +370,18 @@ class TaskGraph:
         # no source -> up-to-date if all targets exists
         if len(task.source) == 0 and len(task.depend) == 0:
             return all([os.path.exists(target) for target in task.target])
-        # check timestamp
-        source_timestamps = [os.stat(f).st_mtime for f in task.source + task.depend if os.path.exists(f)]
-        target_timestamps = [os.stat(f).st_mtime for f in task.target if os.path.exists(f)]
-        if len(source_timestamps) != len(task.source) + len(task.depend) or len(target_timestamps) != len(task.target):
-            # some source/target files do not exist -> not up-to-date
+        # some source does not exist -> not up-to-date
+        if not all([os.path.exists(f) for f in task.source + task.depend]):
             return False
+        # some target does not exist -> not up-to-date
+        if not all([os.path.exists(f) for f in task.target]):
+            return False
+        # do not check timestamp
         if self.no_timestamp or task.no_timestamp:
-            # do not check timestamp
             return True
         # check timestamp to judge
+        source_timestamps = [os.stat(f).st_mtime for f in task.source + task.depend]
+        target_timestamps = [os.stat(f).st_mtime for f in task.target]
         return max(source_timestamps) <= min(target_timestamps)
     
     def __check_outdated_tasks(self):
