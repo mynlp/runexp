@@ -163,7 +163,7 @@ class Task:
         if isstr(depend):
             depend = depend.split()
         if name is None:
-            name = '; '.join(rule)
+            name = ' '.join(target)
         if not isstr(name):
             raise ValueError("name must be a string: {}".format(name))
         if desc is not None and not isstr(desc):
@@ -590,6 +590,10 @@ class ExecCommand:
             # does not execute the command because targets are up-to-date
             logger.info(coloring('blue', '%s [%s] targets up-to-date: ') + '%s', self.task_no, self.task.name, ', '.join(self.task.target))
             return 0
+        elif len(self.task.rule) == 0:
+            # no rule -> show "done" message
+            logger.info(coloring('yellow', '%s [%s] done'), self.task_no, self.task.name)
+            return 0
         elif self.is_dry_run:
             # dry-run mode: does not execute the command
             logger.info(coloring('green', '%s [%s] start: ') + '%s', self.task_no, self.task.name, self.task.show_rule())
@@ -958,7 +962,7 @@ class Workflow:
         argparser.add_argument('-e', '--environment', '--environment-overrides', dest='environment', action='store', default=None, help='Set environment variables (specify variable settings in JSON dictionary format)')
         argparser.add_argument('-E', '--environments-distributed', dest='environments_distributed', action='store', default=None, help='Set environment variables for each distributed worker (specify variable settings in the list of JSON dictionaries; the length of the list must be equal to the number of jobs')
         argparser.add_argument('-r', '--resources', dest='resources', action='store', default=None, help='Set resource specifications (specify resources in JSON dictionary format)')
-        argparser.add_argument('target', nargs='*', default=None, help='Target files to be built (pattern match can be used; run all the tasks if not specified)')
+        argparser.add_argument('target', nargs='*', help='Target files to be built (pattern match can be used; run all the tasks if not specified)')
         arguments = argparser.parse_args(args)
         logger.debug('options: %s', arguments)
         return arguments
@@ -1004,8 +1008,9 @@ class Workflow:
                              ignore_errors = arguments.ignore_errors,
                              ignore_missing_sources = arguments.ignore_missing_sources,
                              always = arguments.always,
-                             no_timestamp = arguments.no_timestamp,
-                             goal_targets = arguments.target)
+                             no_timestamp = arguments.no_timestamp)
+            if len(arguments.target) > 0:
+                self.set_options(goal_targets = arguments.target)
             if arguments.environment is not None:
                 self.set_options(environment = json.loads(arguments.environment))
             if arguments.environments_distributed is not None:
