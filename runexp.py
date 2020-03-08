@@ -153,7 +153,7 @@ def coloring(color, text):
 
 class Task:
     """A single task to receive source files and produce target files"""
-    def __init__(self, name=None, desc=None, source=[], target=[], rule=[], depend=[], resource={}, always=False, no_timestamp=False, ignore_same_task=False, ignore_error=False):
+    def __init__(self, name=None, desc=None, source=[], target=[], rule=[], depend=[], resource={}, always=False, no_timestamp=False, ignore_same_task=False, ignore_error=False, no_exec=False):
         if isstr(source):
             source = source.split()
         if isstr(target):
@@ -189,6 +189,7 @@ class Task:
         self.no_timestamp = no_timestamp  # run commands only when targets do not exist (do not check timestamp)
         self.ignore_same_task = ignore_same_task
         self.ignore_error = ignore_error
+        self.no_exec = no_exec
         pass
 
     def __repr__(self):
@@ -332,9 +333,9 @@ class TaskGraph:
         """Traverse tasks from goal targets and obtain previous tasks and tasks to be executed"""
         logger.debug('TaskGraph.__traverse_backwards()')
         if self.goal_targets is None or len(self.goal_targets) == 0:
-            # all tasks will be run
+            # all tasks (except no_exec) will be run
             logger.debug('TaskGraph.__traverse_backwards(): targets are not specified.  all targets will be run')
-            self.executed_tasks = set(range(self.num_tasks()))
+            self.executed_tasks = [task_id for task_id, task in enumerate(self.task_list) if not task.no_exec]
             return
         # traverse dependencies from goal targets
         logger.debug('TaskGraph.__traverse_backwards(): traverse dependencies from goal targets: %s', self.goal_targets)
