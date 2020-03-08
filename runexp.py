@@ -153,7 +153,7 @@ def coloring(color, text):
 
 class Task:
     """A single task to receive source files and produce target files"""
-    def __init__(self, name=None, desc=None, source=[], target=[], rule=[], depend=[], resource={}, always=False, no_timestamp=False, ignore_same_task=False, ignore_error=False, no_exec=False):
+    def __init__(self, name=None, desc=None, source=[], target=[], rule=[], depend=[], resource={}, always=False, no_timestamp=False, ignore_same_task=False, ignore_error=False, no_exec=False, phony=False):
         if isstr(source):
             source = source.split()
         if isstr(target):
@@ -190,6 +190,7 @@ class Task:
         self.ignore_same_task = ignore_same_task
         self.ignore_error = ignore_error
         self.no_exec = no_exec
+        self.phony = phony
         pass
 
     def __repr__(self):
@@ -219,7 +220,7 @@ class Task:
 
     def show_task(self):
         depend = "  depend: {}\n".format(' '.join(self.depend)) if len(self.depend) != 0 else ""
-        options = [x[1] for x in zip([self.always, self.no_timestamp, self.ignore_same_task, self.ignore_error], ["always", "no_timestamp", "ignore_same_task", "ignore_error"]) if x[0]]
+        options = [x[1] for x in zip([self.always, self.no_timestamp, self.ignore_same_task, self.ignore_error, self.no_exec, self.phony], ["always", "no_timestamp", "ignore_same_task", "ignore_error", "no_exec", "phony"]) if x[0]]
         options_str = "  options: {}\n".format(', '.join(options)) if len(options) > 0 else ""
         description = "  description: {}\n".format(self.desc) if self.desc is not None else ""
         return """Task: {}
@@ -365,7 +366,7 @@ class TaskGraph:
     
     def __up_to_date(self, task):
         # always run the task
-        if self.always or task.always: return False
+        if self.always or task.always or task.phony: return False
         # no targets -> always up-to-date
         if len(task.target) == 0: return True
         # no source -> up-to-date if all targets exists
@@ -601,7 +602,7 @@ class ExecCommand:
             # dry-run mode: does not execute the command
             logger.info(coloring('green', '%s [%s] start: ') + '%s', self.task_no, self.task.name, self.task.show_rule())
             return 0
-        elif self.touch:
+        elif self.touch and not self.task.phony:
             logger.info(coloring('green', '%s [%s] start: ') + '%s', self.task_no, self.task.name, self.task.show_rule())
             ret = self.exec_touch(self.task.target)
             return ret
