@@ -3,7 +3,7 @@
 
 - Features
   - Users define *tasks*, which specify source/target files and a
-    command to generate target files
+    command to generate target files from source files
   - The system automatically computes dependencies among tasks and
     execute them in order
   - Tasks are executed only when:
@@ -14,17 +14,17 @@
   - The system runs tasks in parallel
 
 - How to use
-  1. Create an instance of `Workflow`
-  2. Call this instance with argument source, target, rule, etc.
+  1. Create an instance of `runexp.Workflow`
+  2. Call this instance with arguments `source`, `target`, and `rule`.
   3. Call the method `run()`
   - See the example below.  A more elaborated example is found in the
-    end of "runexp.py".  You can see what happens by running:
+    end of `runexp.py`.  You can see what happens by running:
     `python runexp.py`
 
 - Example
   - The following example executes `ls -l`, `sort`, and then `head`.
   - The order of `exp()` does not matter.  The system automatically
-    computes dependencies among tasks, and executes them in the
+    computes dependencies among tasks, and executes them in an
     appropriate order.
 
 ```
@@ -39,19 +39,22 @@ exp.run()
 - More features
   - Output dependencies of tasks into a PNG file to visualize
   - Users can specify fine-grained conditions to execute a task
-    - `always`: always execute a task
+    - `always`: always execute a task (i.e. execute a task even when
+      targets are newer than sources)
     - `no_timestamp`: do not check timestamp (i.e. do not execute a
-      task even when the targets are old)
-    - these specifications can also be overridden by the command-line
-      argument
+      task even when targets are old)
+    - these conditions can also be overridden by command-line
+      arguments
   - Users can specify any dependent files in addition to sources
-    (e.g. a script to generate targets)
-    - Tasks are executed when any dependent files are newer than
-      targets (e.g. the script is modified)
-    - Dependent files are used only for checking timestamps; not used
-      for computing task dependencies
-  - Users can define environment variables for each worker to execute
-    tasks
+    (e.g. a script to generate targets, a directory to output files)
+    - `depend` files are used only for checking timestamps; i.e. tasks
+      are executed when any `depend` files are newer than targets
+      (e.g. a script is modified)
+    - `require` files are used only for checking their existence;
+      i.e. their timestamps are not checked (e.g. to create a
+      directory to output files)
+  - Users can define environment variables for each worker (a process
+    to execute a task)
     - can be used to change the behavior of each worker in parallel
       processing
     - e.g. allocate a dedicated GPU to each worker
@@ -62,41 +65,66 @@ exp.run()
       GPUs on the worker with a sufficient number of GPUs
 
 - Defining tasks
-  - You can add a task to the workflow by calling the workflow
+  - You can add a task to the workflow by calling the `Workflow`
     instance with the following arguments.
-    - source: input files (space-separated string or list of strings)
-    - target: target files (space-separated string or list of strings)
-    - rule: command to execute (string)
-    - depend (optional): other dependent files (space-separated string
-      or list of strings)
-    - name (optional): a short name shown in the log message
-    - desc (optional): a detailed description shown in the task list
+    - `source`: input files (space-separated string or list of strings)
+    - `target`: target files (space-separated string or list of strings)
+    - `rule`: command to execute (string or list of strings)
+    - `depend` (optional): other dependent files (space-separated
+      string or list of strings)
+    - `require` (optional): other required files (space-separated
+      string or list of strings)
+    - `name` (optional): a short name shown in the log message
+    - `desc` (optional): a detailed description shown in the task list
   - The following options may be specified to control the behavior:
-    - always: always execute this task (bool; default=False)
-    - no_timestamp: do not check timestamp (bool; default=False)
-    - ignore_same_task: ignore doubly added equivalent tasks (bool;
-      default=False); when equivalent tasks are found but this option
-      is False, the system shows an error.
-    - ignore_error: ignore an error of the executed command (bool;
+    - `always`: always execute this task (bool; default=False)
+    - `no_timestamp`: do not check timestamp (bool; default=False)
+    - `ignore_same_task`: ignore multiply added equivalent tasks
+      (bool; default=False); when equivalent tasks are found but this
+      option is False, the system shows an error.
+    - `ignore_error`: ignore an error of the executed command (bool;
       default=False)
+    - `no_exec`: do not execute this task by default (bool;
+      default=False)
+    - `phony`: targets are not real files (bool; default=False); the
+      same as "phony targets" in `make`
+
+- Command-line arguments
+  - Run `python runexp.py -h` to see the description of command-line
+    arguments.
+
+- Environment variables
+  - Use the command-line argument `-E` to give a list of environment
+    variable settings for workers
+    - Each element of the list is a dictionary, which is set as
+      environment variables of each worker.
+    - The length of the list must be equal to the number of workers
+  - Alternatively you can use the argument `environments_distributed`
+    of the constructor or `set_options()` of Workflow
+  - e.g. the following example specifies the environment variable
+    `GPU` for two workers.
+    - `exp = Workflow(environments_distributed=[{'GPU': '1'}, {'GPU': '2'}])`
 
 - Defining resource conditions
-  - Specify available resources for workers, and required resources for tasks
+  - Specify available resources for workers, and required resources
+    for tasks; tasks are executed on a worker with sufficient
+    resources
   - Available resources for workers
-    - Use "-r" option to give a list of available resources for
-      workers.  Each element is a dict, which denotes available
-      resources for a worker.
-    - You can also use "resources" argument of the constructor or
-      'set_options()' of Workflow
+    - Use the command-line argument `-r` to give a list of available
+      resources for workers.  Each element is a dict, which denotes
+      available resources for a worker.
+    - Alternatively you can use the argument `resources` of the
+      constructor or `set_options()` of Workflow
     - e.g. the following example denotes that the first worker has one
       GPU and 4GB memory, while the second worker has no GPU and 16GB
       memory.
-      - `exp = Workflow(resources=[{'GPU': 1, 'Mem': 4}, {'Mem': 16}])
+      - `exp = Workflow(resources=[{'GPU': 1, 'Mem': 4}, {'Mem': 16}])`
   - Required resources for tasks
-    - Specify required resources for a task by "resource" argument
+    - Specify required resources for a task by the argument `resource`
     - e.g. the following example specifies that the task requires 8GB
       memory.
       - `exp(resource={'Mem': 8}, ...)`
+
 """
 
 from __future__ import print_function, unicode_literals, absolute_import
@@ -954,24 +982,24 @@ class Workflow:
     def parse_args(self, args):
         argparser = argparse.ArgumentParser(description='A simple framework to run experiments')
         argparser.add_argument('-c', '--config', dest='config', type=str, default=None, help='Configuration file')
-        argparser.add_argument('-j', '--jobs', dest='num_jobs', type=int, default=None, help='Number of jobs to run')
+        argparser.add_argument('-j', '--jobs', dest='num_jobs', type=int, default=None, help='Number of jobs (workers) to run')
         argparser.add_argument('-n', '--dry-run', '--dryrun', dest='dry_run', action='store_true', default=None, help='Do not run commands (only print commands to be executed)')
-        argparser.add_argument('-l', '--list-tasks', dest='list_tasks', action='store_true', default=None, help='Print the list of tasks')
-        argparser.add_argument('-g', '--dependency-graph', dest='dependency_graph', type=str, default=None, help='Output dependency graph')
+        argparser.add_argument('-l', '--list-tasks', dest='list_tasks', action='store_true', default=None, help='Print the list of all tasks')
+        argparser.add_argument('-g', '--dependency-graph', dest='dependency_graph', type=str, default=None, help='Output a dependency graph in a PNG file')
         argparser.add_argument('-k', '--keep-going', dest='keep_going', action='store_true', default=None, help='Continue to run tasks as far as possible even when some tasks failed')
         argparser.add_argument('-S', '--no-keep-going', '--stop', dest='keep_going', action='store_false', default=None, help='Stop to run tasks when some tasks failed (cancels "-k")')
         argparser.add_argument('-T', '--terminate-on-error', dest='terminate_on_error', action='store_true', default=None, help='Terminate running tasks when some tasks failed (default)')
         argparser.add_argument('-C', '--no-terminate-on-error', dest='terminate_on_error', action='store_false', default=None, help='Do not terminate running tasks when some tasks failed')
         argparser.add_argument('-B', '--always', dest='always', action='store_true', default=None, help='Force running all commands')
-        argparser.add_argument('-N', '--no-timestamp', dest='no_timestamp', action='store_true', default=None, help='Do not run commands if all sources/targets exist (do not check timestamp)')
+        argparser.add_argument('-N', '--no-timestamp', dest='no_timestamp', action='store_true', default=None, help='Do not run commands if all sources/targets exist (do not check timestamps)')
         argparser.add_argument('-d', '--debug', dest='debug', action='store_true', default=None, help='Show debug messages')
         argparser.add_argument('-s', '--silent', '--quiet', dest='silent', action='store_true', default=None, help='Do not print commands to be run')
         argparser.add_argument('-t', '--touch', dest='touch', action='store_true', default=None, help='Touch target files rather than executing commands')
         argparser.add_argument('-i', '--ignore-errors', dest='ignore_errors', action='store_true', default=None, help='Ignore all errors in executed commands')
         argparser.add_argument('--ignore-missing-sources', dest='ignore_missing_sources', action='store_true', default=None, help='Ignore errors of missing source files')
         argparser.add_argument('-e', '--environment', '--environment-overrides', dest='environment', action='store', default=None, help='Set environment variables (specify variable settings in JSON dictionary format)')
-        argparser.add_argument('-E', '--environments-distributed', dest='environments_distributed', action='store', default=None, help='Set environment variables for each distributed worker (specify variable settings in the list of JSON dictionaries; the length of the list must be equal to the number of jobs')
-        argparser.add_argument('-r', '--resources', dest='resources', action='store', default=None, help='Set resource specifications (specify resources in JSON dictionary format)')
+        argparser.add_argument('-E', '--environments-distributed', dest='environments_distributed', action='store', default=None, help='Set environment variables for each distributed worker (specify variable settings in a list of JSON dictionaries; the length of the list must be equal to the number of workers)')
+        argparser.add_argument('-r', '--resources', dest='resources', action='store', default=None, help='Set resource specifications (specify resources in a list of JSON dictionaries; the length of the list must be equal to the number of workers)')
         argparser.add_argument('target', nargs='*', help='Target files to be built (pattern match can be used; run all the tasks if not specified)')
         arguments = argparser.parse_args(args)
         logger.debug('options: %s', arguments)
