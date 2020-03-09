@@ -153,7 +153,7 @@ def coloring(color, text):
 
 class Task:
     """A single task to receive source files and produce target files"""
-    def __init__(self, name=None, desc=None, source=[], target=[], rule=[], depend=[], resource={}, always=False, no_timestamp=False, ignore_same_task=False, ignore_error=False, no_exec=False, phony=False):
+    def __init__(self, name=None, desc=None, source=[], target=[], rule=[], depend=[], require=[], resource={}, always=False, no_timestamp=False, ignore_same_task=False, ignore_error=False, no_exec=False, phony=False):
         if isstr(source):
             source = source.split()
         if isstr(target):
@@ -162,6 +162,8 @@ class Task:
             rule = rule.split('\n')
         if isstr(depend):
             depend = depend.split()
+        if isstr(require):
+            require = require.split()
         if name is None:
             name = ' '.join(target)
         if not isstr(name):
@@ -176,6 +178,8 @@ class Task:
             raise ValueError("rule must be a string or a list of strings: {}".format(rule))
         if not (isinstance(depend, list) and all([isstr(x) for x in depend])):
             raise ValueError("depend must be a string or a list of strings: {}".format(depend))
+        if not (isinstance(require, list) and all([isstr(x) for x in require])):
+            raise ValueError("require must be a string or a list of strings: {}".format(require))
         if not isinstance(resource, dict):
             raise ValueError("resource must be dict")
         self.name = name
@@ -184,6 +188,7 @@ class Task:
         self.target = target
         self.rule = rule
         self.depend = depend
+        self.require = require
         self.resource = resource
         self.always = always  # force all commands to be executed
         self.no_timestamp = no_timestamp  # run commands only when targets do not exist (do not check timestamp)
@@ -197,7 +202,7 @@ class Task:
         return self.__str__()
 
     def __str__(self):
-        return u'Task {}: rule="{}" source=[{}] target=[{}] depend=[{}]'.format(self.name, '; '.join(self.rule), ','.join(self.source), ','.join(self.target), ','.join(self.depend))
+        return u'Task {}: rule="{}" source=[{}] target=[{}] depend=[{}] require=[{}]'.format(self.name, '; '.join(self.rule), ','.join(self.source), ','.join(self.target), ','.join(self.depend), ','.join(self.require))
 
     def resource_satisfied(self, available_resource):
         """Check whether all required resources are satisfied"""
@@ -220,6 +225,7 @@ class Task:
 
     def show_task(self):
         depend = "  depend: {}\n".format(' '.join(self.depend)) if len(self.depend) != 0 else ""
+        require = "  require: {}\n".format(' '.join(self.require)) if len(self.require) != 0 else ""
         options = [x[1] for x in zip([self.always, self.no_timestamp, self.ignore_same_task, self.ignore_error, self.no_exec, self.phony], ["always", "no_timestamp", "ignore_same_task", "ignore_error", "no_exec", "phony"]) if x[0]]
         options_str = "  options: {}\n".format(', '.join(options)) if len(options) > 0 else ""
         description = "  description: {}\n".format(self.desc) if self.desc is not None else ""
@@ -227,7 +233,7 @@ class Task:
   source: {}
   target: {}
   rule: {}
-{}{}{}""".format(self.name, ' '.join(self.source), ' '.join(self.target), '; '.join(self.rule), depend, options_str, description)
+{}{}{}{}""".format(self.name, ' '.join(self.source), ' '.join(self.target), '; '.join(self.rule), depend, require, options_str, description)
     
 ######################################################################
 
@@ -259,7 +265,7 @@ class TaskGraph:
         # compute prev/next tasks for each file
         for task_id, task in enumerate(self.task_list):
             # use realpath to process same files with different paths
-            sources = [os.path.realpath(source) for source in task.source]
+            sources = [os.path.realpath(source) for source in task.source + task.require]
             targets = [os.path.realpath(target) for target in task.target]
             # confirm sources and targets are disjoint
             if len(set(sources) & set(targets)) != 0:
@@ -277,7 +283,7 @@ class TaskGraph:
         self.prev_tasks = [[] for _ in range(self.num_tasks())]
         self.next_tasks = [[] for _ in range(self.num_tasks())]
         for task_id, task in enumerate(self.task_list):
-            for source in task.source:
+            for source in task.source + task.require:
                 source_path = os.path.realpath(source)
                 self.prev_tasks[task_id].extend(prev_tasks.get(source_path, []))
             for target in task.target:
@@ -370,10 +376,10 @@ class TaskGraph:
         # no targets -> always up-to-date
         if len(task.target) == 0: return True
         # no source -> up-to-date if all targets exists
-        if len(task.source) == 0 and len(task.depend) == 0:
+        if len(task.source) == 0 and len(task.depend) == 0 and len(task.require) == 0:
             return all([os.path.exists(target) for target in task.target])
         # some source does not exist -> not up-to-date
-        if not all([os.path.exists(f) for f in task.source + task.depend]):
+        if not all([os.path.exists(f) for f in task.source + task.depend + task.require]):
             return False
         # some target does not exist -> not up-to-date
         if not all([os.path.exists(f) for f in task.target]):
@@ -447,7 +453,7 @@ class TaskGraph:
     def check_missing_sources(self):
         """Check whether input files exist"""
         logger.debug('TaskGraph.check_missing_sources(): Collect sources that are not generated by any tasks')
-        all_sources = set([os.path.realpath(f) for f in sum([self.get_task(task_id).source for task_id in self.executed_tasks], [])])
+        all_sources = set([os.path.realpath(f) for f in sum([self.get_task(task_id).source + self.get_task(task_id).require for task_id in self.executed_tasks], [])])
         all_targets = set([os.path.realpath(f) for f in sum([self.get_task(task_id).target for task_id in self.executed_tasks], [])])
         sources = all_sources - all_targets
         logger.debug('TaskGraph.check_missing_sources(): check existence: %s', sources)
