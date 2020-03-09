@@ -268,15 +268,16 @@ class Task:
 class TaskGraph:
     """Construct a graph of dependencies from task definitions"""
 
-    def __init__(self, task_list, targets=None, always=False, no_timestamp=False):
+    def __init__(self, task_list, targets=None, always=False, no_timestamp=False, all_tasks=False):
         if not isinstance(task_list, list) or not all([isinstance(t, Task) for t in task_list]):
             raise ValueError("task_list must be list of Task")
         logger.debug('TaskGraph.task_list: %s', task_list)
         self.task_list = task_list
         # task dependency graph
         self.goal_targets = targets
-        self.always = always  # run all tasks including up-to-date tasks
+        self.always = always        # run tasks including up-to-date tasks
         self.no_timestamp = no_timestamp  # run tasks only when targets do not exist (do not check timestamp)
+        self.all_tasks = all_tasks  # run all tasks in the task graph (except those with no_exec)
         self.prev_tasks = None      # task -> previous tasks
         self.next_tasks = None      # task -> next tasks
         self.initial_tasks = None   # tasks to begin with
@@ -367,7 +368,7 @@ class TaskGraph:
     def __traverse_backwards(self):
         """Traverse tasks from goal targets and obtain previous tasks and tasks to be executed"""
         logger.debug('TaskGraph.__traverse_backwards()')
-        if self.goal_targets is None or len(self.goal_targets) == 0:
+        if self.goal_targets is None or len(self.goal_targets) == 0 or self.all_tasks:
             # all tasks (except no_exec) will be run
             logger.debug('TaskGraph.__traverse_backwards(): targets are not specified.  all targets will be run')
             self.executed_tasks = [task_id for task_id, task in enumerate(self.task_list) if not task.no_exec]
@@ -872,6 +873,7 @@ class Workflow:
                     terminate_on_error = None,
                     ignore_errors = None,
                     ignore_missing_sources = None,
+                    all_tasks = None,
                     always = None,
                     no_timestamp = None,
                     debug_level = None,
@@ -906,6 +908,9 @@ class Workflow:
         if ignore_missing_sources is not None:
             if not isinstance(ignore_missing_sources, bool): raise ValueError("ignore_missing_sources must be bool")
             self.ignore_missing_sources = ignore_missing_sources
+        if all_tasks is not None:
+            if not isinstance(all_tasks, bool): raise ValueError("all_tasks must be bool")
+            self.all_tasks = all_tasks
         if always is not None:
             if not isinstance(always, bool): raise ValueError("always must be bool")
             self.always = always
@@ -943,6 +948,7 @@ class Workflow:
                      terminate_on_error = True,
                      ignore_errors = False,
                      ignore_missing_sources = False,
+                     all_tasks = False,
                      always = False,
                      no_timestamp = False,
                      debug_level = logging.INFO,
@@ -963,6 +969,7 @@ class Workflow:
                          terminate_on_error = terminate_on_error,
                          ignore_errors = ignore_errors,
                          ignore_missing_sources = ignore_missing_sources,
+                         all_tasks = all_tasks,
                          always = always,
                          no_timestamp = no_timestamp,
                          debug_level = debug_level,
@@ -974,8 +981,8 @@ class Workflow:
         
     def show_options(self):
         bools = ','.join([x[1] for x in
-                          zip([self.dry_run, self.touch, self.list_tasks, self.keep_going, self.terminate_on_error, self.ignore_errors, self.ignore_missing_sources, self.always, self.no_timestamp],
-                              ["dry_run", "touch", "list_tasks", "keep_going", "terminate_on_error", "ignore_errors", "ignore_missing_sources", "always", "no_timestamp"])
+                          zip([self.dry_run, self.touch, self.list_tasks, self.keep_going, self.terminate_on_error, self.ignore_errors, self.ignore_missing_sources, self.all_tasks, self.always, self.no_timestamp],
+                              ["dry_run", "touch", "list_tasks", "keep_going", "terminate_on_error", "ignore_errors", "ignore_missing_sources", "all_tasks", "always", "no_timestamp"])
                           if x[0]])
         return """num_jobs={}, dependency_graph={}, debug_level={}, options: {}""".format(self.num_jobs, self.dependency_graph, self.debug_level, bools)
     
@@ -990,6 +997,7 @@ class Workflow:
         argparser.add_argument('-S', '--no-keep-going', '--stop', dest='keep_going', action='store_false', default=None, help='Stop to run tasks when some tasks failed (cancels "-k")')
         argparser.add_argument('-T', '--terminate-on-error', dest='terminate_on_error', action='store_true', default=None, help='Terminate running tasks when some tasks failed (default)')
         argparser.add_argument('-C', '--no-terminate-on-error', dest='terminate_on_error', action='store_false', default=None, help='Do not terminate running tasks when some tasks failed')
+        argparser.add_argument('-a', '--all', '--all-tasks', dest='all_tasks', action='store_true', default=None, help='Run all tasks (except those with `no_exec`)')
         argparser.add_argument('-B', '--always', dest='always', action='store_true', default=None, help='Force running all commands')
         argparser.add_argument('-N', '--no-timestamp', dest='no_timestamp', action='store_true', default=None, help='Do not run commands if all sources/targets exist (do not check timestamps)')
         argparser.add_argument('-d', '--debug', dest='debug', action='store_true', default=None, help='Show debug messages')
@@ -1045,6 +1053,7 @@ class Workflow:
                              terminate_on_error = arguments.terminate_on_error,
                              ignore_errors = arguments.ignore_errors,
                              ignore_missing_sources = arguments.ignore_missing_sources,
+                             all_tasks = arguments.all_tasks,
                              always = arguments.always,
                              no_timestamp = arguments.no_timestamp)
             if len(arguments.target) > 0:
@@ -1151,7 +1160,7 @@ class Workflow:
         # Run tasks
         logger.debug('create TaskGraph')
         try:
-            task_graph = TaskGraph(self.task_list, self.goal_targets, self.always, self.no_timestamp)
+            task_graph = TaskGraph(self.task_list, targets=self.goal_targets, always=self.always, no_timestamp=self.no_timestamp, all_tasks=self.all_tasks)
         except ValueError as e:
             logger.error(coloring('red', e.args[0]))
             return False
