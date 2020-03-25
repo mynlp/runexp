@@ -158,7 +158,11 @@ else:
 
 logger = logging.getLogger(__name__)
 #logging.basicConfig(level=logging.DEBUG, format='%(asctime)s:%(name)s:%(funcName)s:%(levelname)s: %(message)s')
-logging.basicConfig(level=logging.INFO, format='%(asctime)s:%(name)s:%(levelname)s: %(message)s')
+#logging.basicConfig(level=logging.INFO, format='%(asctime)s:%(name)s:%(levelname)s: %(message)s')
+handler = logging.StreamHandler()
+handler.setFormatter(logging.Formatter('%(asctime)s:%(name)s:%(levelname)s: %(message)s'))
+logger.addHandler(handler)
+logger.setLevel(logging.INFO)
 
 ######################################################################
 
@@ -616,40 +620,51 @@ class ExecCommand:
             return 1
         except TaskTerminatedException as e:
             logger.debug('ExecCommand terminates subprocess: %s', rule)
-            os.killpg(proc.pid, signal.SIGTERM)
+            try:
+                os.killpg(proc.pid, signal.SIGTERM)
+            except Exception as e:
+                pass
             return 1
         except Exception as e:
             logger.debug('ExecCommand: Unknown error raised')
-            os.killpg(proc.pid, signal.SIGTERM)
+            try:
+                os.killpg(proc.pid, signal.SIGTERM)
+            except Exception as e:
+                pass
             return 1
         return ret
 
     def __call__(self):
-        if self.up_to_date:
-            # does not execute the command because targets are up-to-date
-            logger.info(coloring('blue', '%s [%s] targets up-to-date: ') + '%s', self.task_no, self.task.name, ', '.join(self.task.target))
-            return 0
-        elif len(self.task.rule) == 0:
-            # no rule -> show "done" message
-            logger.info(coloring('yellow', '%s [%s] done'), self.task_no, self.task.name)
-            return 0
-        elif self.is_dry_run:
-            # dry-run mode: does not execute the command
-            logger.info(coloring('green', '%s [%s] start: ') + '%s', self.task_no, self.task.name, self.task.show_rule())
-            return 0
-        elif self.touch and not self.task.phony:
-            logger.info(coloring('green', '%s [%s] start: ') + '%s', self.task_no, self.task.name, self.task.show_rule())
-            ret = self.exec_touch(self.task.target)
-            return ret
-        else:
-            logger.info(coloring('green', '%s [%s] start: ') + '%s', self.task_no, self.task.name, self.task.show_rule())
-            for rule in self.task.rule:
-                ret = self.exec_command(rule)
-                if ret != 0 and not self.ignore_error:
-                    logger.error(coloring('red', '***** %s [%s] failed (status=%s) *****: ') + '%s', self.task_no, self.task.name, ret, self.task.show_rule())
-                    return ret
-            logger.info(coloring('yellow', '%s [%s] done: ') + '%s', self.task_no, self.task.name, self.task.show_rule())
-            return 0
+        try:
+            if self.up_to_date:
+                # does not execute the command because targets are up-to-date
+                logger.info(coloring('blue', '%s [%s] targets up-to-date: ') + '%s', self.task_no, self.task.name, ', '.join(self.task.target))
+                return 0
+            elif len(self.task.rule) == 0:
+                # no rule -> show "done" message
+                logger.info(coloring('yellow', '%s [%s] done'), self.task_no, self.task.name)
+                return 0
+            elif self.is_dry_run:
+                # dry-run mode: does not execute the command
+                logger.info(coloring('green', '%s [%s] start: ') + '%s', self.task_no, self.task.name, self.task.show_rule())
+                return 0
+            elif self.touch and not self.task.phony:
+                logger.info(coloring('green', '%s [%s] start: ') + '%s', self.task_no, self.task.name, self.task.show_rule())
+                ret = self.exec_touch(self.task.target)
+                return ret
+            else:
+                logger.info(coloring('green', '%s [%s] start: ') + '%s', self.task_no, self.task.name, self.task.show_rule())
+                for rule in self.task.rule:
+                    ret = self.exec_command(rule)
+                    if ret != 0 and not self.ignore_error:
+                        logger.error(coloring('red', '***** %s [%s] failed (status=%s) *****: ') + '%s', self.task_no, self.task.name, ret, self.task.show_rule())
+                        return ret
+                logger.info(coloring('yellow', '%s [%s] done: ') + '%s', self.task_no, self.task.name, self.task.show_rule())
+                return 0
+        except TaskTerminatedException as e:
+            logger.debug('ExecCommand:__call__ terminated')
+            return 1
+        pass
 
 class Scheduler:
     def __init__(self, task_graph, dry_run=False, touch=False, keep_going=False, terminate_on_error=True, ignore_errors=False, ignore_missing_sources=False, num_jobs=1, environments=None, resources=None):
